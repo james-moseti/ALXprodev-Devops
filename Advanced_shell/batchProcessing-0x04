@@ -1,0 +1,265 @@
+#!/bin/bash
+
+API_BASE_URL="https://pokeapi.co/api/v2/pokemon"
+OUTPUT_DIR="pokemon_data"
+ERROR_FILE="batch_errors.txt"
+PID_FILE="running_processes.pid"
+MAX_RETRIES=3
+REQUEST_TIMEOUT=30
+DELAY_SECONDS=1
+MAX_PARALLEL_JOBS=5
+
+POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
+
+# Setup directories and files
+setup() {
+    mkdir -p "$OUTPUT_DIR"
+    echo "[$(date)] Parallel session started" > "$ERROR_FILE"
+    > "$PID_FILE"  # Clear PID file
+    
+    # Create a named pipe for job control
+    if [[ ! -p job_queue ]]; then
+        mkfifo job_queue
+    fi
+    
+    # Initialize semaphore for controlling parallel jobs
+    exec 3<>job_queue
+    for ((i=1; i<=MAX_PARALLEL_JOBS; i++)); do
+        echo >&3
+    done
+}
+
+# Log function with process-safe file writing
+log_error() {
+    echo "[$(date)] [PID: $$] $1" >> "$ERROR_FILE"
+}
+
+# Network connectivity check
+check_network() {
+    curl -s --max-time 5 "https://pokeapi.co" > /dev/null 2>&1
+}
+
+# Validate Pokemon name format
+validate_name() {
+    [[ "$1" =~ ^[a-z-]+$ ]]
+}
+
+# Fetch Pokemon data with retry logic (runs in background)
+fetch_pokemon() {
+    local name="$1"
+    local output="$OUTPUT_DIR/${name}.json"
+    local url="$API_BASE_URL/${name}"
+    local attempt=1
+    local process_id=$$
+    
+    # Acquire semaphore slot
+    read -u3
+    
+    if ! validate_name "$name"; then
+        log_error "Invalid name format: $name"
+        echo >&3  # Release semaphore
+        return 1
+    fi
+    
+    echo "[PID: $process_id] Starting fetch for $name..."
+    
+    while [ $attempt -le $MAX_RETRIES ]; do
+        local temp="temp_${name}_${process_id}_${attempt}.json"
+        local response=$(curl -s -w "%{http_code}" --max-time "$REQUEST_TIMEOUT" --fail "$url" -o "$temp" 2>/dev/null)
+        local http_code="${response: -3}"
+        
+        case "$http_code" in
+            200)
+                if jq empty "$temp" 2>/dev/null; then
+                    mv "$temp" "$output"
+                    echo "[PID: $process_id] ✓ $name saved successfully"
+                    echo >&3  # Release semaphore
+                    return 0
+                else
+                    log_error "$name: Invalid JSON received (attempt $attempt) [PID: $process_id]"
+                    rm -f "$temp"
+                fi
+                ;;
+            404)
+                log_error "$name: Pokemon not found (HTTP 404) [PID: $process_id]"
+                rm -f "$temp"
+                echo >&3  # Release semaphore
+                return 1
+                ;;
+            429)
+                log_error "$name: Rate limited (attempt $attempt) [PID: $process_id]"
+                rm -f "$temp"
+                sleep $((DELAY_SECONDS * attempt * 2))
+                ;;
+            000|"")
+                log_error "$name: Network/timeout error (attempt $attempt) [PID: $process_id]"
+                rm -f "$temp"
+                ;;
+            *)
+                log_error "$name: HTTP error $http_code (attempt $attempt) [PID: $process_id]"
+                rm -f "$temp"
+                ;;
+        esac
+        
+        ((attempt++))
+        [ $attempt -le $MAX_RETRIES ] && sleep "$DELAY_SECONDS"
+    done
+    
+    echo "[PID: $process_id] ✗ $name failed after $MAX_RETRIES attempts"
+    log_error "$name: Failed after $MAX_RETRIES attempts [PID: $process_id]"
+    echo >&3  # Release semaphore
+    return 1
+}
+
+# Process management functions
+start_background_job() {
+    local pokemon="$1"
+    fetch_pokemon "$pokemon" &
+    local pid=$!
+    echo "$pid:$pokemon" >> "$PID_FILE"
+    echo "Started background job for $pokemon (PID: $pid)"
+}
+
+# Wait for all background processes to complete
+wait_for_all_jobs() {
+    local pids=()
+    local pokemon_names=()
+    
+    echo "Waiting for all background processes to complete..."
+    
+    # Read PIDs and pokemon names from file
+    while IFS=':' read -r pid pokemon_name; do
+        if [[ -n "$pid" && -n "$pokemon_name" ]]; then
+            pids+=("$pid")
+            pokemon_names+=("$pokemon_name")
+        fi
+    done < "$PID_FILE"
+    
+    # Wait for each process and track results
+    local completed=0
+    local failed=0
+    
+    for i in "${!pids[@]}"; do
+        local pid="${pids[$i]}"
+        local pokemon="${pokemon_names[$i]}"
+        
+        if wait "$pid"; then
+            echo "✓ Process $pid ($pokemon) completed successfully"
+            ((completed++))
+        else
+            echo "✗ Process $pid ($pokemon) failed"
+            ((failed++))
+        fi
+    done
+    
+    echo "Process completion summary:"
+    echo "  Successful: $completed"
+    echo "  Failed: $failed"
+    echo "  Total: $((completed + failed))"
+    
+    return $failed
+}
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up..."
+    
+    # Kill any remaining background processes
+    if [[ -f "$PID_FILE" ]]; then
+        while IFS=':' read -r pid pokemon_name; do
+            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+                echo "Terminating remaining process $pid ($pokemon_name)"
+                kill -TERM "$pid" 2>/dev/null
+                sleep 2
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill -KILL "$pid" 2>/dev/null
+                fi
+            fi
+        done < "$PID_FILE"
+    fi
+    
+    # Clean up temporary files
+    rm -f temp_*.json
+    rm -f "$PID_FILE"
+    rm -f job_queue
+    
+    # Close file descriptor
+    exec 3>&-
+    
+    echo "[$(date)] Parallel session completed" >> "$ERROR_FILE"
+}
+
+# Set up signal handlers for graceful shutdown
+trap cleanup EXIT
+trap 'echo "Received SIGINT, cleaning up..."; cleanup; exit 130' INT
+trap 'echo "Received SIGTERM, cleaning up..."; cleanup; exit 143' TERM
+
+# Display script information
+display_info() {
+    echo "=================================================="
+    echo "Parallel Pokemon Data Fetcher"
+    echo "=================================================="
+    echo "Target Pokemon: ${POKEMON_LIST[*]}"
+    echo "Max parallel jobs: $MAX_PARALLEL_JOBS"
+    echo "Output directory: $OUTPUT_DIR"
+    echo "Error log: $ERROR_FILE"
+    echo "=================================================="
+}
+
+# Main execution
+main() {
+    display_info
+    setup
+    
+    # Network connectivity check
+    if ! check_network; then
+        echo "Network connectivity test failed"
+        log_error "Network connectivity test failed - cannot proceed"
+        exit 1
+    fi
+    echo "✓ Network connectivity verified"
+    
+    # Start parallel background jobs
+    echo "Starting parallel data fetching..."
+    for pokemon in "${POKEMON_LIST[@]}"; do
+        start_background_job "$pokemon"
+        sleep 0.1  # Small delay to prevent overwhelming the API
+    done
+    
+    # Wait for all processes to complete
+    wait_for_all_jobs
+    local exit_code=$?
+    
+    # Display final results
+    echo "=================================================="
+    echo "Final Results:"
+    echo "=================================================="
+    
+    local successful_files=0
+    for pokemon in "${POKEMON_LIST[@]}"; do
+        local file="$OUTPUT_DIR/${pokemon}.json"
+        if [[ -f "$file" ]] && [[ -s "$file" ]]; then
+            echo "✓ $pokemon data saved to $file"
+            ((successful_files++))
+        else
+            echo "✗ $pokemon data missing or empty"
+        fi
+    done
+    
+    echo "=================================================="
+    echo "Summary: $successful_files/${#POKEMON_LIST[@]} Pokemon successfully retrieved"
+    echo "Check $ERROR_FILE for detailed error information"
+    echo "=================================================="
+    
+    # Exit with appropriate code
+    if [[ $successful_files -eq ${#POKEMON_LIST[@]} ]]; then
+        echo "All Pokemon data retrieved successfully!"
+        exit 0
+    else
+        echo "Some Pokemon data could not be retrieved"
+        exit $exit_code
+    fi
+}
+
+# Run main function
+main "$@"
