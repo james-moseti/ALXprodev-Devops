@@ -1,0 +1,33 @@
+#!/bin/bash
+JSON_FILE="data.json"
+
+# Check if data.json exists
+if [ ! -f "$JSON_FILE" ]; then
+    echo "Error: $JSON_FILE not found. Run the API fetcher script first."
+    exit 1
+fi
+
+# Extract data using jq
+name=$(jq -r '.name' "$JSON_FILE")
+height=$(jq -r '.height' "$JSON_FILE")
+weight=$(jq -r '.weight' "$JSON_FILE")
+types=$(jq -r '.types[].type.name' "$JSON_FILE")
+
+# Convert height from decimeters to meters using awk
+height_m=$(echo "$height" | awk '{printf "%.1f", $1/10}')
+
+# Convert weight from hectograms to kg using awk
+weight_kg=$(echo "$weight" | awk '{printf "%d", $1/10}')
+
+# Format types into a readable string using sed and awk
+# First, join multiple types with " and "
+types_formatted=$(echo "$types" | awk 'BEGIN{ORS=""} {if(NR>1) print " and "; print $0}')
+
+# Capitalize first letter of each type using sed
+types_formatted=$(echo "$types_formatted" | sed 's/\b\w/\U&/g')
+
+# Capitalize the Pokemon name using sed
+name_formatted=$(echo "$name" | sed 's/\b\w/\U&/g')
+
+# Create the final formatted output
+echo "${name_formatted} is of type ${types_formatted}, weighs ${weight_kg}kg, and is ${height_m}m tall."

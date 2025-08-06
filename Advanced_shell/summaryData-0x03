@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# Configuration
+DATA_DIR="pokemon_data"
+REPORT_FILE="pokemon_report.csv"
+TEMP_DATA="temp_pokemon_data.txt"
+
+# Check if data directory exists
+if [ ! -d "$DATA_DIR" ]; then
+    echo "Error: $DATA_DIR directory not found. Run fetch_multiple_pokemon first."
+    exit 1
+fi
+
+# Check if JSON files exist
+json_files=("$DATA_DIR"/*.json)
+if [ ! -e "${json_files[0]}" ]; then
+    echo "Error: No JSON files found in $DATA_DIR directory."
+    exit 1
+fi
+
+echo "Generating Pokemon report..."
+
+# Create CSV header
+echo "Name,Height (m),Weight (kg)" > "$REPORT_FILE"
+
+# Extract data from each JSON file and prepare for processing
+> "$TEMP_DATA"
+
+for json_file in "$DATA_DIR"/*.json; do
+    if [ -f "$json_file" ]; then
+        # Extract name, height, and weight using jq
+        name=$(jq -r '.name' "$json_file")
+        height=$(jq -r '.height' "$json_file")
+        weight=$(jq -r '.weight' "$json_file")
+        
+        # Convert units and format using awk
+        echo "$name $height $weight" | awk '{
+            # Capitalize first letter of name
+            name = toupper(substr($1, 1, 1)) substr($1, 2)
+            # Convert height from decimeters to meters
+            height_m = $2 / 10
+            # Convert weight from hectograms to kg
+            weight_kg = $3 / 10
+            # Format for CSV
+            printf "%s,%.1f,%.1f\n", name, height_m, weight_kg
+        }' >> "$REPORT_FILE"
+        
+        # Store raw converted values for statistics
+        echo "$name $height $weight" | awk '{
+            height_m = $2 / 10
+            weight_kg = $3 / 10
+            printf "%.1f %.1f\n", height_m, weight_kg
+        }' >> "$TEMP_DATA"
+    fi
+done
+
+# Sort CSV by name (excluding header)
+{
+    head -n 1 "$REPORT_FILE"
+    tail -n +2 "$REPORT_FILE" | sort
+} > "${REPORT_FILE}.tmp" && mv "${REPORT_FILE}.tmp" "$REPORT_FILE"
+
+echo "CSV Report generated at: $REPORT_FILE"
+echo ""
+
+# Display the CSV content
+cat "$REPORT_FILE"
+echo ""
+
+# Calculate averages using awk
+if [ -s "$TEMP_DATA" ]; then
+    awk '{
+        height_sum += $1
+        weight_sum += $2
+        count++
+    }
+    END {
+        if (count > 0) {
+            avg_height = height_sum / count
+            avg_weight = weight_sum / count
+            printf "Average Height: %.2f m\n", avg_height
+            printf "Average Weight: %.2f kg\n", avg_weight
+        }
+    }' "$TEMP_DATA"
+else
+    echo "No data available for statistics calculation."
+fi
+
+# Clean up temporary files
+rm -f "$TEMP_DATA" temp_stats.txt

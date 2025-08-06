@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# Configuration
+API_BASE_URL="https://pokeapi.co/api/v2/pokemon"
+OUTPUT_DIR="pokemon_data"
+ERROR_FILE="fetch_errors.txt"
+DELAY_SECONDS=1
+
+# Pokemon list
+POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
+
+# Create output directory if it doesn't exist
+mkdir -p "$OUTPUT_DIR"
+
+# Function to fetch a single Pokemon
+fetch_pokemon() {
+    local pokemon_name="$1"
+    local output_file="$OUTPUT_DIR/${pokemon_name}.json"
+    local api_url="$API_BASE_URL/${pokemon_name}"
+    
+    echo "Fetching data for ${pokemon_name}..."
+    
+    # Make API request with timeout and capture HTTP status
+    response=$(curl -s -w "%{http_code}" --max-time 30 "$api_url" -o "temp_${pokemon_name}.json")
+    http_code="${response: -3}"
+    
+    if [ "$http_code" -eq 200 ]; then
+        # Success: move temp file to final location
+        mv "temp_${pokemon_name}.json" "$output_file"
+        echo "Saved data to $output_file ✅"
+        return 0
+    else
+        # Error handling
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] Failed to fetch $pokemon_name - HTTP $http_code" >> "$ERROR_FILE"
+        
+        # Log response content if available
+        if [ -s "temp_${pokemon_name}.json" ]; then
+            echo "[$timestamp] Response: $(cat "temp_${pokemon_name}.json")" >> "$ERROR_FILE"
+        fi
+        
+        # Clean up temp file
+        rm -f "temp_${pokemon_name}.json"
+        
+        echo "Failed to fetch $pokemon_name (HTTP $http_code) ❌"
+        return 1
+    fi
+}
+
+# Main execution
+echo "Starting Pokemon data collection..."
+echo "Output directory: $OUTPUT_DIR"
+echo "Rate limit delay: ${DELAY_SECONDS}s between requests"
+echo "----------------------------------------"
+
+success_count=0
+total_count=${#POKEMON_LIST[@]}
+
+for pokemon in "${POKEMON_LIST[@]}"; do
+    fetch_pokemon "$pokemon"
+    
+    if [ $? -eq 0 ]; then
+        ((success_count++))
+    fi
+    
+    # Rate limiting: sleep between requests (except for the last one)
+    if [ "$pokemon" != "${POKEMON_LIST[-1]}" ]; then
+        sleep "$DELAY_SECONDS"
+    fi
+done
+
+echo "----------------------------------------"
+echo "Completed: $success_count/$total_count Pokemon fetched successfully"
+
+if [ $success_count -lt $total_count ]; then
+    echo "Some requests failed. Check $ERROR_FILE for details."
+fi
