@@ -39,12 +39,14 @@ for json_file in "$DATA_DIR"/*.json; do
             continue
         fi
         
+        # Capitalize name using sed
+        cap_name=$(echo "$name" | sed 's/\b\w/\U&/g')
+        
         # Use awk to convert units and format
-        echo "$height $weight" | awk -v name="$name" '{
+        echo "$height $weight" | awk -v name="$cap_name" '{
             height_m = $1 / 10
             weight_kg = $2 / 10
-            cap_name = toupper(substr(name, 1, 1)) substr(name, 2)
-            printf "%s,%.1f,%.1f\n", cap_name, height_m, weight_kg
+            printf "%s,%.1f,%.1f\n", name, height_m, weight_kg
         }' >> "$REPORT_FILE"
         
         # Store numeric data for statistics
