@@ -23,33 +23,35 @@ echo "Generating Pokemon report..."
 # Create CSV header
 echo "Name,Height (m),Weight (kg)" > "$REPORT_FILE"
 
-# Extract data from each JSON file and prepare for processing
+# Initialize temp data file
 > "$TEMP_DATA"
 
+# Process each JSON file
 for json_file in "$DATA_DIR"/*.json; do
     if [ -f "$json_file" ]; then
-        # Extract name, height, and weight using jq
-        name=$(jq -r '.name' "$json_file")
-        height=$(jq -r '.height' "$json_file")
-        weight=$(jq -r '.weight' "$json_file")
+        # Extract data using jq
+        name=$(jq -r '.name' "$json_file" 2>/dev/null)
+        height=$(jq -r '.height' "$json_file" 2>/dev/null)
+        weight=$(jq -r '.weight' "$json_file" 2>/dev/null)
         
-        # Convert units and format using awk
-        echo "$name $height $weight" | awk '{
-            # Capitalize first letter of name
-            name = toupper(substr($1, 1, 1)) substr($1, 2)
-            # Convert height from decimeters to meters
-            height_m = $2 / 10
-            # Convert weight from hectograms to kg
-            weight_kg = $3 / 10
-            # Format for CSV
-            printf "%s,%.1f,%.1f\n", name, height_m, weight_kg
+        # Skip if any value is null or invalid
+        if [ "$name" = "null" ] || [ "$height" = "null" ] || [ "$weight" = "null" ]; then
+            continue
+        fi
+        
+        # Use awk to convert units and format
+        echo "$height $weight" | awk -v name="$name" '{
+            height_m = $1 / 10
+            weight_kg = $2 / 10
+            cap_name = toupper(substr(name, 1, 1)) substr(name, 2)
+            printf "%s,%.1f,%.1f\n", cap_name, height_m, weight_kg
         }' >> "$REPORT_FILE"
         
-        # Store raw converted values for statistics
-        echo "$name $height $weight" | awk '{
-            height_m = $2 / 10
-            weight_kg = $3 / 10
-            printf "%.1f %.1f\n", height_m, weight_kg
+        # Store numeric data for statistics
+        echo "$height $weight" | awk '{
+            height_m = $1 / 10
+            weight_kg = $2 / 10
+            print height_m, weight_kg
         }' >> "$TEMP_DATA"
     fi
 done
