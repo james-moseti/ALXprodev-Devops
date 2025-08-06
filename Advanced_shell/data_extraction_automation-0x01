@@ -21,13 +21,13 @@ weight_kg=$(echo "$weight" | awk '{printf "%d", $1/10}')
 
 # Format types into a readable string using sed and awk
 # First, join multiple types with " and "
-types_formatted=$(echo "$types" | awk 'BEGIN{ORS=""} {if(NR>1) print " and "; print $0}')
+formatted_type=$(echo "$types" | awk 'BEGIN{ORS=""} {if(NR>1) print " and "; print $0}')
 
 # Capitalize first letter of each type using sed
-types_formatted=$(echo "$types_formatted" | sed 's/\b\w/\U&/g')
+formatted_type=$(echo "$formatted_type" | sed 's/\b\w/\U&/g')
 
 # Capitalize the Pokemon name using sed
-name_formatted=$(echo "$name" | sed 's/\b\w/\U&/g')
+formatted_name=$(echo "$name" | sed 's/\b\w/\U&/g')
 
 # Create the final formatted output
-echo "${name_formatted} is of type ${types_formatted}, weighs ${weight_kg}kg, and is ${height_m}m tall."
+echo "${formatted_name} is of type ${formatted_type}, weighs ${weight_kg}kg, and is ${height_m}m tall."
